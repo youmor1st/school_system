@@ -5,3 +5,4 @@ aerich
 asyncpg
 python-dotenv
 aiogram
+passlib[bcrypt]
