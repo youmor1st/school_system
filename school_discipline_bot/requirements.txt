@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+tortoise-orm
+aerich
+asyncpg
+python-dotenv
+aiogram
