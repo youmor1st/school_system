@@ -7,7 +7,7 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-from backend.models import Student, Teacher
+from backend.models import Student, Teacher, Admin
 
 # --- Environment Variables ---
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
@@ -60,6 +60,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         user = await Student.get_or_none(id=int(user_id))
     elif role == "teacher":
         user = await Teacher.get_or_none(id=int(user_id))
+    elif role == "admin":
+        user = await Admin.get_or_none(id=int(user_id))
 
     if user is None:
         raise credentials_exception
@@ -69,3 +71,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     #     raise HTTPException(status_code=400, detail="Inactive user")
 
     return user
+
+
+async def get_current_admin(current_user: Union[Student, Teacher, Admin] = Depends(get_current_user)) -> Admin:
+    if not isinstance(current_user, Admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to perform this action. Admin access required.",
+        )
+    return current_user

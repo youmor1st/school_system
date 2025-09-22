@@ -1,13 +1,14 @@
 from typing import List
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from tortoise.contrib.pydantic import pydantic_model_creator
 from tortoise.exceptions import DoesNotExist, IntegrityError
 
-from backend.models import DisciplineRule, Teacher, Student
-from backend.utils.security import get_password_hash
+from backend.models import DisciplineRule, Teacher, Student, PointHistory, Admin
+from backend.utils.security import get_password_hash, get_current_admin
+from tortoise.transactions import in_transaction
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_admin)])
 
 # --- Pydantic Models for Rules ---
 
@@ -304,3 +305,102 @@ async def delete_student(student_id: int):
             detail=f"Student with ID {student_id} not found",
         )
     return
+
+
+# --- Pydantic Models for History ---
+
+PointHistory_Pydantic = pydantic_model_creator(PointHistory, name="PointHistory")
+
+
+# --- CRUD for Point History (Moderation) ---
+
+@router.get(
+    "/history",
+    response_model=List[PointHistory_Pydantic],
+    summary="Get all point history records",
+    tags=["Admin - Moderation"]
+)
+async def get_all_history():
+    """
+    Retrieve all point history records, showing student, teacher, and rule involved.
+    """
+    return await PointHistory_Pydantic.from_queryset(PointHistory.all().prefetch_related("student", "teacher", "rule"))
+
+
+@router.delete(
+    "/history/{history_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a point history record (reverts points)",
+    tags=["Admin - Moderation"]
+)
+async def delete_history_entry(history_id: int):
+    """
+    Deletes a specific point history entry and reverts the student's points.
+    This action is transactional.
+    """
+    try:
+        async with in_transaction():
+            # Get the history record and prefetch the related student
+            history_record = await PointHistory.get(id=history_id).prefetch_related("student")
+            student = history_record.student
+
+            # Revert the points
+            student.points -= history_record.points_changed
+            await student.save(update_fields=["points"])
+
+            # Delete the history record
+            await history_record.delete()
+
+    except DoesNotExist:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Point history record with ID {history_id} not found",
+        )
+    except Exception as e:
+        # Generic error for any other issues during the transaction
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {e}",
+        )
+
+    return
+
+
+# --- Pydantic Models for Stats ---
+
+class TeacherStats(BaseModel):
+    teacher_id: int
+    first_name: str
+    last_name: str | None
+    positive_assignments: int
+    negative_assignments: int
+
+
+# --- Admin Statistics Endpoints ---
+
+@router.get(
+    "/stats/teachers",
+    response_model=List[TeacherStats],
+    summary="Get statistics on teacher point assignments",
+    tags=["Admin - Stats"]
+)
+async def get_teacher_stats():
+    """
+    Returns a list of teachers with the count of positive and negative points
+    they have assigned.
+    """
+    teachers = await Teacher.all()
+    stats = []
+    for teacher in teachers:
+        positive_count = await PointHistory.filter(teacher=teacher, points_changed__gt=0).count()
+        negative_count = await PointHistory.filter(teacher=teacher, points_changed__lt=0).count()
+        stats.append(
+            TeacherStats(
+                teacher_id=teacher.id,
+                first_name=teacher.first_name,
+                last_name=teacher.last_name,
+                positive_assignments=positive_count,
+                negative_assignments=negative_count,
+            )
+        )
+    return stats
